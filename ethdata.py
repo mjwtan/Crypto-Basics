@@ -80,9 +80,31 @@ def main():
     else:
         st.line_chart(df.set_index('open_time')['close'])
 
-    # News feed and Twitter sentiment (placeholder)
+
+    # News feed integration using NewsAPI.org
+    import requests
+    import os
     st.subheader('News Feed')
-    st.info('News feed integration coming soon!')
+    NEWSAPI_KEY = os.environ.get('NEWSAPI_KEY')
+    if not NEWSAPI_KEY:
+        st.info('Set the NEWSAPI_KEY environment variable to see news headlines.\n\nIn PowerShell, run:  $env:NEWSAPI_KEY = "your_actual_key"\nThen restart Streamlit.')
+    else:
+        news_url = f'https://newsapi.org/v2/everything?q=cryptocurrency OR bitcoin OR ethereum&language=en&sortBy=publishedAt&pageSize=5&apiKey={NEWSAPI_KEY}'
+        try:
+            response = requests.get(news_url)
+            data = response.json()
+            if data.get('status') == 'ok' and data.get('articles'):
+                for article in data['articles']:
+                    st.markdown(f"**[{article['title']}]({article['url']})**  ")
+                    st.caption(article['source']['name'] + ' | ' + article['publishedAt'][:10])
+                    st.write(article['description'] or '')
+                    st.write('---')
+            else:
+                st.info('No news found or API limit reached.')
+        except Exception as e:
+            st.error(f'Error fetching news: {e}')
+
+    # Twitter sentiment (placeholder)
     st.subheader('Twitter Sentiment')
     st.info('Twitter sentiment analysis coming soon!')
 
