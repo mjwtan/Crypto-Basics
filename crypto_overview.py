@@ -5,6 +5,8 @@ import time
 import os
 from dotenv import load_dotenv
 import numpy as np
+import requests
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
@@ -30,14 +32,33 @@ def process_ohlcv(ohlcv):
     df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
     return df
 
+def get_top_symbols():
+    try:
+        url = 'https://coinmarketcap.com/'
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        symbols = []
+        for row in soup.select('table tbody tr')[:25]:
+            symbol_tag = row.select_one('td:nth-child(3) .coin-item-symbol')
+            if symbol_tag:
+                symbol = symbol_tag.text.strip()
+                symbols.append(f'{symbol}/USDT')
+        if symbols:
+            return symbols
+    except Exception as e:
+        print(f'Error scraping CoinMarketCap: {e}')
+    # Fallback
+    return ['ETH/USDT', 'BTC/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT']
+
 
 def main():
     st.set_page_config(layout='wide', page_title='Crypto App')
     st.sidebar.title('Navigation')
-    page = st.sidebar.radio('Go to', ['Overview', 'Backtesting'])
+    page = st.sidebar.radio('Go to', ['Overview', 'Backtesting', 'Strategy Optimizer'])
 
     # Shared controls
-    symbols = ['ETH/USDT', 'BTC/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT']
+    symbols = get_top_symbols()
     timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
     symbol = st.sidebar.selectbox('Select Trading Pair', symbols, index=0)
     timeframe = st.sidebar.selectbox('Select Timeframe', timeframes, index=2)
@@ -67,47 +88,52 @@ def main():
         st.write(df[['open_time', 'open', 'high', 'low', 'close', 'volume']])
 
         import plotly.graph_objects as go
+        fig = go.Figure()
+        # Candlestick
+        fig.add_trace(go.Candlestick(
+            x=df['open_time'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name=symbol
+        ))
+        # Volume as bar chart
+        fig.add_trace(go.Bar(
+            x=df['open_time'],
+            y=df['volume'],
+            name='Volume',
+            marker_color='rgba(128,128,128,0.3)',
+            yaxis='y2',
+            opacity=0.3
+        ))
+        # Overlays for indicators
+        if show_sma and 'SMA20' in df:
+            fig.add_trace(go.Scatter(x=df['open_time'], y=df['SMA20'], mode='lines', name='SMA 20', line=dict(color='blue')))
+        if show_ema and 'EMA20' in df:
+            fig.add_trace(go.Scatter(x=df['open_time'], y=df['EMA20'], mode='lines', name='EMA 20', line=dict(color='orange')))
+        if show_rsi and 'RSI14' in df:
+            fig.add_trace(go.Scatter(x=df['open_time'], y=df['RSI14'], mode='lines', name='RSI 14', line=dict(color='purple', dash='dot')))
+        fig.update_layout(
+            title=f'{symbol} {timeframe} Candlestick Chart',
+            xaxis_title='Time',
+            yaxis_title='Price (USDT)',
+            xaxis_rangeslider_visible=False,
+            yaxis=dict(title='Price (USDT)', side='left'),
+            yaxis2=dict(title='Volume', overlaying='y', side='right', showgrid=False, rangemode='tozero'),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # News feed
+        NEWSAPI_KEY = os.environ.get('NEWSAPI_KEY')
+        base_coin = symbol.split('/')[0] if '/' in symbol else symbol
         if not NEWSAPI_KEY:
             st.info('Set the NEWSAPI_KEY environment variable to see news headlines.\n\nIn PowerShell, run:  $env:NEWSAPI_KEY = "your_actual_key"\nThen restart Streamlit.')
         else:
             news_url = f'https://newsapi.org/v2/everything?q={base_coin}&language=en&sortBy=publishedAt&pageSize=5&apiKey={NEWSAPI_KEY}'
-        if strategy == 'Momentum':
-            # Custom trade logic for momentum: entry on signal==1, exit on price drop or max hold
-            for idx, row in df.iterrows():
-                if row['signal'] == 1 and position is None:
-                    position = 'long'
-                    entry_idx = idx
-                    entry_equity = current_equity
-                    entry_price = row['close']
-                    hold_count = 0
-                elif position == 'long':
-                    hold_count += 1
-                    # Exit if price drops from entry by mom_exit percent or max hold reached or explicit sell signal
-                    price_drop = (row['close'] - entry_price) / entry_price * 100
-                    if price_drop <= -mom_exit or hold_count >= mom_max_hold or row['signal'] == -1:
-                        entry_time = df.at[entry_idx, 'open_time']
-                        exit_time = row['open_time']
-                        exit_price = row['close']
-                        trade_return = (exit_price - entry_price) / entry_price
-                        duration = (exit_time - entry_time).total_seconds() / 3600
-                        risked = entry_equity * (risk_pct / 100) if compounding == 'Yes' else capital * (risk_pct / 100)
-                        not_risked = entry_equity - risked if compounding == 'Yes' else capital - risked
-                        profit = risked * trade_return
-                        current_equity = not_risked + risked + profit if reinvest == 'Yes' else current_equity + profit
-                        equity_curve.append(current_equity)
-                        trades.append({
-                            'Entry Time': entry_time,
-                            'Entry Price': entry_price,
-                            'Exit Time': exit_time,
-                            'Exit Price': exit_price,
-                            'Return (%)': trade_return * 100,
-                            'Duration (h)': duration,
-                            'Profit': profit,
-                            'Equity After': current_equity
-                        })
-                        position = None
-                        entry_idx = None
             try:
+                import requests
                 response = requests.get(news_url)
                 data = response.json()
                 if data.get('status') == 'ok' and data.get('articles'):
@@ -432,6 +458,138 @@ def main():
             st.write(f"Final Capital (Strategy): {sim_equity[-1]:.2f} USDT")
             st.write(f"Final Capital (Buy & Hold): {buy_hold_curve[-1]:.2f} USDT")
             st.write(f"Final Capital (Cash): {cash_curve[-1]:.2f} USDT")
+
+    elif page == 'Strategy Optimizer':
+        st.title('Strategy Optimizer')
+        st.write('Run a grid search over strategy parameters to find the best-performing set.')
+        # Select strategy
+        opt_strategies = ['SMA Crossover', 'EMA Crossover', 'RSI Strategy']
+        opt_strategy = st.selectbox('Optimize Strategy', opt_strategies)
+        # Parameter grid selection
+        if opt_strategy == 'SMA Crossover':
+            sma_fast_range = st.slider('SMA Fast Window Range', 2, 50, (5, 15))
+            sma_slow_range = st.slider('SMA Slow Window Range', 10, 100, (20, 50))
+            fast_vals = list(range(sma_fast_range[0], sma_fast_range[1]+1))
+            slow_vals = list(range(sma_slow_range[0], sma_slow_range[1]+1))
+            param_grid = [(f, s) for f in fast_vals for s in slow_vals if f < s]
+        elif opt_strategy == 'EMA Crossover':
+            ema_fast_range = st.slider('EMA Fast Window Range', 2, 50, (5, 15))
+            ema_slow_range = st.slider('EMA Slow Window Range', 10, 100, (20, 50))
+            fast_vals = list(range(ema_fast_range[0], ema_fast_range[1]+1))
+            slow_vals = list(range(ema_slow_range[0], ema_slow_range[1]+1))
+            param_grid = [(f, s) for f in fast_vals for s in slow_vals if f < s]
+        elif opt_strategy == 'RSI Strategy':
+            rsi_period_range = st.slider('RSI Period Range', 2, 30, (7, 21))
+            rsi_buy_range = st.slider('RSI Buy Threshold Range', 5, 50, (20, 35))
+            rsi_sell_range = st.slider('RSI Sell Threshold Range', 50, 90, (65, 80))
+            period_vals = list(range(rsi_period_range[0], rsi_period_range[1]+1))
+            buy_vals = list(range(rsi_buy_range[0], rsi_buy_range[1]+1))
+            sell_vals = list(range(rsi_sell_range[0], rsi_sell_range[1]+1))
+            param_grid = [(p, b, s) for p in period_vals for b in buy_vals for s in sell_vals if b < s]
+        # Run grid search
+        st.write('Running grid search...')
+        results = []
+        for params in param_grid:
+            df_opt = df.copy()
+            if opt_strategy == 'SMA Crossover':
+                f, s = params
+                df_opt['sma_fast'] = df_opt['close'].rolling(window=f).mean()
+                df_opt['sma_slow'] = df_opt['close'].rolling(window=s).mean()
+                df_opt['signal'] = (df_opt['sma_fast'] > df_opt['sma_slow']).astype(int)
+                df_opt['signal'] = df_opt['signal'].diff().fillna(0)
+            elif opt_strategy == 'EMA Crossover':
+                f, s = params
+                df_opt['ema_fast'] = df_opt['close'].ewm(span=f, adjust=False).mean()
+                df_opt['ema_slow'] = df_opt['close'].ewm(span=s, adjust=False).mean()
+                df_opt['signal'] = (df_opt['ema_fast'] > df_opt['ema_slow']).astype(int)
+                df_opt['signal'] = df_opt['signal'].diff().fillna(0)
+            elif opt_strategy == 'RSI Strategy':
+                p, b, s = params
+                delta = df_opt['close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=p).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=p).mean()
+                rs = gain / loss
+                df_opt['RSI'] = 100 - (100 / (1 + rs))
+                df_opt['signal'] = 0
+                df_opt.loc[(df_opt['RSI'] < b) & (df_opt['RSI'].shift(1) >= b), 'signal'] = 1
+                df_opt.loc[(df_opt['RSI'] > s) & (df_opt['RSI'].shift(1) <= s), 'signal'] = -1
+            # Simple backtest: buy on 1, sell on -1, full compounding
+            capital = 1000.0
+            equity = capital
+            position = None
+            entry_price = None
+            for i, row in df_opt.iterrows():
+                if row['signal'] == 1 and position is None:
+                    position = 'long'
+                    entry_price = row['close']
+                elif row['signal'] == -1 and position == 'long' and entry_price is not None:
+                    trade_return = (row['close'] / entry_price) - 1
+                    equity = equity * (1 + trade_return)
+                    position = None
+                    entry_price = None
+            # If open at end, close at last price
+            if position == 'long' and entry_price is not None:
+                trade_return = (df_opt.iloc[-1]['close'] / entry_price) - 1
+                equity = equity * (1 + trade_return)
+            total_return = (equity / capital) - 1
+            results.append((params, total_return))
+        # Show results as table or heatmap
+        st.write('Results Table (Top 20):')
+        results_sorted = sorted(results, key=lambda x: x[1], reverse=True)
+        st.dataframe(pd.DataFrame([
+            {'Params': str(r[0]), 'Total Return (%)': f'{r[1]*100:.2f}'} for r in results_sorted[:20]
+        ]))
+        # Show best equity curve
+        best_params = results_sorted[0][0]
+        st.write(f'Best Parameters: {best_params}')
+        # Re-run best equity curve
+        df_best = df.copy()
+        if opt_strategy == 'SMA Crossover':
+            f, s = best_params
+            df_best['sma_fast'] = df_best['close'].rolling(window=f).mean()
+            df_best['sma_slow'] = df_best['close'].rolling(window=s).mean()
+            df_best['signal'] = (df_best['sma_fast'] > df_best['sma_slow']).astype(int)
+            df_best['signal'] = df_best['signal'].diff().fillna(0)
+        elif opt_strategy == 'EMA Crossover':
+            f, s = best_params
+            df_best['ema_fast'] = df_best['close'].ewm(span=f, adjust=False).mean()
+            df_best['ema_slow'] = df_best['close'].ewm(span=s, adjust=False).mean()
+            df_best['signal'] = (df_best['ema_fast'] > df_best['ema_slow']).astype(int)
+            df_best['signal'] = df_best['signal'].diff().fillna(0)
+        elif opt_strategy == 'RSI Strategy':
+            p, b, s = best_params
+            delta = df_best['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=p).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=p).mean()
+            rs = gain / loss
+            df_best['RSI'] = 100 - (100 / (1 + rs))
+            df_best['signal'] = 0
+            df_best.loc[(df_best['RSI'] < b) & (df_best['RSI'].shift(1) >= b), 'signal'] = 1
+            df_best.loc[(df_best['RSI'] > s) & (df_best['RSI'].shift(1) <= s), 'signal'] = -1
+        # Equity curve for best
+        capital = 1000.0
+        equity_curve = [capital]
+        position = None
+        entry_price = None
+        for i, row in df_best.iterrows():
+            if row['signal'] == 1 and position is None:
+                position = 'long'
+                entry_price = row['close']
+            elif row['signal'] == -1 and position == 'long' and entry_price is not None:
+                trade_return = (row['close'] / entry_price) - 1
+                equity_curve.append(equity_curve[-1] * (1 + trade_return))
+                position = None
+                entry_price = None
+            else:
+                equity_curve.append(equity_curve[-1])
+        if position == 'long' and entry_price is not None:
+            trade_return = (df_best.iloc[-1]['close'] / entry_price) - 1
+            equity_curve.append(equity_curve[-1] * (1 + trade_return))
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(y=equity_curve, mode='lines', name='Best Equity Curve'))
+        fig.update_layout(title='Best Parameter Equity Curve', xaxis_title='Step', yaxis_title='Equity (USDT)')
+        st.plotly_chart(fig, use_container_width=True)
 
 
 if __name__ == "__main__":
