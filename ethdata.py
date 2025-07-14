@@ -1,8 +1,13 @@
 
+
 import ccxt
 import pandas as pd
 import streamlit as st
 import time
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def fetch_ohlcv(symbol: str, timeframe: str, since: int, limit: int = 672):
     """Fetch OHLCV data from Binance using ccxt."""
@@ -86,10 +91,12 @@ def main():
     import os
     st.subheader('News Feed')
     NEWSAPI_KEY = os.environ.get('NEWSAPI_KEY')
+    # Use the base coin (e.g., ETH from ETH/USDT)
+    base_coin = symbol.split('/')[0]
     if not NEWSAPI_KEY:
         st.info('Set the NEWSAPI_KEY environment variable to see news headlines.\n\nIn PowerShell, run:  $env:NEWSAPI_KEY = "your_actual_key"\nThen restart Streamlit.')
     else:
-        news_url = f'https://newsapi.org/v2/everything?q=cryptocurrency OR bitcoin OR ethereum&language=en&sortBy=publishedAt&pageSize=5&apiKey={NEWSAPI_KEY}'
+        news_url = f'https://newsapi.org/v2/everything?q={base_coin}&language=en&sortBy=publishedAt&pageSize=5&apiKey={NEWSAPI_KEY}'
         try:
             response = requests.get(news_url)
             data = response.json()
@@ -104,9 +111,6 @@ def main():
         except Exception as e:
             st.error(f'Error fetching news: {e}')
 
-    # Twitter sentiment (placeholder)
-    st.subheader('Twitter Sentiment')
-    st.info('Twitter sentiment analysis coming soon!')
 
 if __name__ == "__main__":
     main()
