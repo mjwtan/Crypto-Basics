@@ -51,6 +51,18 @@ def get_top_symbols():
     # Fallback
     return ['ETH/USDT', 'BTC/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT']
 
+def get_timeframe_ms(timeframe: str) -> int:
+    """Return the number of milliseconds in one candle for a given timeframe string."""
+    tf_map = {
+        '1m': 60 * 1000,
+        '5m': 5 * 60 * 1000,
+        '15m': 15 * 60 * 1000,
+        '1h': 60 * 60 * 1000,
+        '4h': 4 * 60 * 60 * 1000,
+        '1d': 24 * 60 * 60 * 1000,
+    }
+    return tf_map.get(timeframe, 60 * 1000)
+
 
 def main():
     st.set_page_config(layout='wide', page_title='Crypto App')
@@ -62,8 +74,10 @@ def main():
     timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
     symbol = st.sidebar.selectbox('Select Trading Pair', symbols, index=0)
     timeframe = st.sidebar.selectbox('Select Timeframe', timeframes, index=2)
-    # Fetch all available data
-    since = 0
+    # Fetch most recent data
+    now_ms = int(time.time() * 1000)
+    tf_ms = get_timeframe_ms(timeframe)
+    since = now_ms - (tf_ms * 2500)
     ohlcv = fetch_ohlcv(symbol, timeframe, since, max_candles=2500)
     df = process_ohlcv(ohlcv)
 
@@ -462,6 +476,31 @@ def main():
     elif page == 'Strategy Optimizer':
         st.title('Strategy Optimizer')
         st.write('Run a grid search over strategy parameters to find the best-performing set.')
+        # Always load most recent data for selected symbol/timeframe
+        now_ms = int(time.time() * 1000)
+        tf_ms = get_timeframe_ms(timeframe)
+        opt_since = now_ms - (tf_ms * 2500)
+        opt_ohlcv = fetch_ohlcv(symbol, timeframe, since=opt_since, max_candles=2500)
+        df_opt_full = process_ohlcv(opt_ohlcv)
+        # Date range selection for optimizer
+        all_dates = df_opt_full['open_time'].dt.date
+        min_date = all_dates.min()
+        max_date = all_dates.max()
+        # --- Fix: Use session state to reset date pickers if symbol/timeframe changes ---
+        if 'opt_start' not in st.session_state or st.session_state.get('last_symbol') != symbol or st.session_state.get('last_timeframe') != timeframe:
+            st.session_state['opt_start'] = min_date
+            st.session_state['opt_end'] = max_date
+            st.session_state['last_symbol'] = symbol
+            st.session_state['last_timeframe'] = timeframe
+        col1, col2 = st.columns(2)
+        with col1:
+            opt_start = st.date_input('Optimizer Start Date', min_value=min_date, max_value=max_date, value=st.session_state['opt_start'], key='opt_start')
+        with col2:
+            opt_end = st.date_input('Optimizer End Date', min_value=min_date, max_value=max_date, value=st.session_state['opt_end'], key='opt_end')
+        df_opt_range = df_opt_full[(df_opt_full['open_time'].dt.date >= opt_start) & (df_opt_full['open_time'].dt.date <= opt_end)].copy()
+        if df_opt_range.empty:
+            st.warning('No data available for the selected date range.')
+            return
         # Select strategy
         opt_strategies = ['SMA Crossover', 'EMA Crossover', 'RSI Strategy']
         opt_strategy = st.selectbox('Optimize Strategy', opt_strategies)
@@ -490,7 +529,7 @@ def main():
         st.write('Running grid search...')
         results = []
         for params in param_grid:
-            df_opt = df.copy()
+            df_opt = df_opt_range.copy()
             if opt_strategy == 'SMA Crossover':
                 f, s = params
                 df_opt['sma_fast'] = df_opt['close'].rolling(window=f).mean()
@@ -543,7 +582,7 @@ def main():
         best_params = results_sorted[0][0]
         st.write(f'Best Parameters: {best_params}')
         # Re-run best equity curve
-        df_best = df.copy()
+        df_best = df_opt_range.copy()
         if opt_strategy == 'SMA Crossover':
             f, s = best_params
             df_best['sma_fast'] = df_best['close'].rolling(window=f).mean()
@@ -587,8 +626,16 @@ def main():
             equity_curve.append(equity_curve[-1] * (1 + trade_return))
         import plotly.graph_objects as go
         fig = go.Figure()
-        fig.add_trace(go.Scatter(y=equity_curve, mode='lines', name='Best Equity Curve'))
-        fig.update_layout(title='Best Parameter Equity Curve', xaxis_title='Step', yaxis_title='Equity (USDT)')
+        # Overlay equity and price (secondary y-axis)
+        fig.add_trace(go.Scatter(y=equity_curve, mode='lines', name='Best Equity Curve', yaxis='y1'))
+        fig.add_trace(go.Scatter(y=df_best['close'].values, mode='lines', name='Price', yaxis='y2', line=dict(color='gray', dash='dot')))
+        fig.update_layout(
+            title='Best Parameter Equity Curve (with Price)',
+            xaxis_title='Step',
+            yaxis=dict(title='Equity (USDT)', side='left'),
+            yaxis2=dict(title='Price', overlaying='y', side='right', showgrid=False),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+        )
         st.plotly_chart(fig, use_container_width=True)
 
 
